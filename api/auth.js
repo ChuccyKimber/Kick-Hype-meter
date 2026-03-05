@@ -6,24 +6,19 @@ function base64URLEncode(buffer) {
 }
 
 export default function handler(req, res) {
-  // Generate PKCE code verifier + challenge
   const codeVerifier = base64URLEncode(crypto.randomBytes(32));
   const codeChallenge = base64URLEncode(
     crypto.createHash('sha256').update(codeVerifier).digest()
   );
-  const state = base64URLEncode(crypto.randomBytes(16));
+  const nonce = base64URLEncode(crypto.randomBytes(8));
 
-  // Store verifier + state in cookies so /callback can verify
-  res.setHeader('Set-Cookie', [
-    `kick_code_verifier=${codeVerifier}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`,
-    `kick_state=${state}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`
-  ]);
+  // Encode verifier into state so it survives the cross-site redirect
+  // Format: nonce.base64url(verifier)
+  const verifierEncoded = Buffer.from(codeVerifier).toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  const state = nonce + '.' + verifierEncoded;
 
-  const scopes = [
-    'user:read',
-    'channel:read',
-    'events:subscribe'
-  ].join(' ');
+  const scopes = ['user:read', 'channel:read', 'events:subscribe'].join(' ');
 
   const params = new URLSearchParams({
     response_type: 'code',
