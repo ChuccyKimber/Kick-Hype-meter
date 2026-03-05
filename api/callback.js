@@ -1,30 +1,39 @@
 export default async function handler(req, res) {
   const { code, state } = req.query;
 
-  if (!code || !state) {
-    return res.status(400).send('Missing code or state. Please try again.');
+  // Debug: show exactly what we received
+  if (!code && !state) {
+    return res.status(400).send('No code or state received. Query params: ' + JSON.stringify(req.query));
   }
 
-  // Extract verifier from state: format is nonce.base64url(verifier)
+  if (!code) {
+    return res.status(400).send('No code received. State was: ' + state);
+  }
+
+  if (!state) {
+    return res.status(400).send('No state received. Code was present.');
+  }
+
+  // Extract verifier from state
   const dotIndex = state.indexOf('.');
   if (dotIndex === -1) {
-    return res.status(400).send('Invalid state format. Please try again.');
+    return res.status(400).send('State has no dot separator. State received: ' + state.substring(0, 20) + '...');
   }
 
   const verifierEncoded = state.slice(dotIndex + 1);
+
   let codeVerifier;
   try {
-    // Restore base64url padding and decode
     const padded = verifierEncoded.replace(/-/g, '+').replace(/_/g, '/');
     const pad = padded.length % 4;
     const paddedFull = pad ? padded + '='.repeat(4 - pad) : padded;
     codeVerifier = Buffer.from(paddedFull, 'base64').toString('utf8');
   } catch (err) {
-    return res.status(400).send('Could not decode verifier. Please try again.');
+    return res.status(400).send('Decode error: ' + err.message + ' | encoded was: ' + verifierEncoded.substring(0, 20));
   }
 
   if (!codeVerifier) {
-    return res.status(400).send('Missing code verifier. Please try again.');
+    return res.status(400).send('codeVerifier empty after decode.');
   }
 
   try {
@@ -44,11 +53,9 @@ export default async function handler(req, res) {
     const data = await tokenRes.json();
 
     if (!tokenRes.ok || !data.access_token) {
-      console.error('Token exchange failed:', JSON.stringify(data));
-      return res.status(500).send('Token exchange failed: ' + (data.message || data.error || 'unknown error'));
+      return res.status(500).send('Token exchange failed: ' + JSON.stringify(data));
     }
 
-    // Store token in secure HttpOnly cookie
     res.setHeader('Set-Cookie',
       `kick_access_token=${data.access_token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${data.expires_in || 3600}`
     );
@@ -56,7 +63,6 @@ export default async function handler(req, res) {
     res.redirect('/?connected=true');
 
   } catch (err) {
-    console.error('Callback error:', err);
-    res.status(500).send('Something went wrong: ' + err.message);
+    res.status(500).send('Fetch error: ' + err.message);
   }
 }
