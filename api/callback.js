@@ -1,28 +1,33 @@
 export default async function handler(req, res) {
   const { code, state } = req.query;
 
-  // Parse cookies
-  const cookies = Object.fromEntries(
-    (req.headers.cookie || '').split(';').map(c => {
-      const [k, ...v] = c.trim().split('=');
-      return [k, v.join('=')];
-    })
-  );
-
-  const savedState = cookies['kick_state'];
-  const codeVerifier = cookies['kick_code_verifier'];
-
-  // Validate state to prevent CSRF
-  if (!state || state !== savedState) {
-    return res.status(400).send('Invalid state parameter. Please try again.');
+  if (!code || !state) {
+    return res.status(400).send('Missing code or state. Please try again.');
   }
 
-  if (!code || !codeVerifier) {
-    return res.status(400).send('Missing code or verifier. Please try again.');
+  // Extract verifier from state: format is nonce.base64url(verifier)
+  const dotIndex = state.indexOf('.');
+  if (dotIndex === -1) {
+    return res.status(400).send('Invalid state format. Please try again.');
+  }
+
+  const verifierEncoded = state.slice(dotIndex + 1);
+  let codeVerifier;
+  try {
+    // Restore base64url padding and decode
+    const padded = verifierEncoded.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = padded.length % 4;
+    const paddedFull = pad ? padded + '='.repeat(4 - pad) : padded;
+    codeVerifier = Buffer.from(paddedFull, 'base64').toString('utf8');
+  } catch (err) {
+    return res.status(400).send('Could not decode verifier. Please try again.');
+  }
+
+  if (!codeVerifier) {
+    return res.status(400).send('Missing code verifier. Please try again.');
   }
 
   try {
-    // Exchange code for token — client secret stays server-side
     const tokenRes = await fetch('https://id.kick.com/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -39,24 +44,19 @@ export default async function handler(req, res) {
     const data = await tokenRes.json();
 
     if (!tokenRes.ok || !data.access_token) {
-      console.error('Token exchange failed:', data);
-      return res.status(500).send('Token exchange failed. Please try again.');
+      console.error('Token exchange failed:', JSON.stringify(data));
+      return res.status(500).send('Token exchange failed: ' + (data.message || data.error || 'unknown error'));
     }
 
-    // Store access token in secure cookie, redirect back to app
-    res.setHeader('Set-Cookie', [
-      `kick_access_token=${data.access_token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${data.expires_in || 3600}`,
-      `kick_refresh_token=${data.refresh_token || ''}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
-      // Clear PKCE cookies
-      `kick_code_verifier=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`,
-      `kick_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`
-    ]);
+    // Store token in secure HttpOnly cookie
+    res.setHeader('Set-Cookie',
+      `kick_access_token=${data.access_token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${data.expires_in || 3600}`
+    );
 
-    // Redirect back to the app — token is in cookie, never in URL
     res.redirect('/?connected=true');
 
   } catch (err) {
     console.error('Callback error:', err);
-    res.status(500).send('Something went wrong. Please try again.');
+    res.status(500).send('Something went wrong: ' + err.message);
   }
 }
